@@ -1,4 +1,3 @@
-os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
 import streamlit as st
 import wave
 import tempfile
@@ -17,7 +16,7 @@ from langchain.chains import RetrievalQA
 import os
 import time
 
- 
+os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.set_page_config(page_title="HR Voice Assistant", page_icon="🎤", layout="wide")
