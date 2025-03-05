@@ -108,7 +108,7 @@ def generate_response(query):
     status_message.empty()
     
     almost_there_message = st.info("✅ Almost there...")
-    time.sleep(1.5)  # Simulate slight delay before response
+    time.sleep(0.5)  # Simulate slight delay before response
     almost_there_message.empty()
     
     return response
@@ -149,11 +149,6 @@ def main():
     """)
     
     # Display Streamlit version information and autoplay note
-    st.info("""
-    Note: Automatic audio playback requires Streamlit version 1.10.0 or newer.
-    Current installed version: """ + st.__version__ + """
-    If autoplay doesn't work, you'll need to upgrade Streamlit with: `pip install --upgrade streamlit>=1.10.0`
-    """)
     
     if "messages" not in st.session_state:
         st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything about HR policies!"}]
