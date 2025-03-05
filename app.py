@@ -1,8 +1,12 @@
+os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
 import streamlit as st
-import pyaudio
 import wave
 import tempfile
+import numpy as np
+import soundfile as sf
 from io import BytesIO
+import asyncio
+from edge_tts import Communicate
 from openai import OpenAI
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -13,7 +17,7 @@ from langchain.chains import RetrievalQA
 import os
 import time
 
-os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
+ 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.set_page_config(page_title="HR Voice Assistant", page_icon="🎤", layout="wide")
@@ -26,29 +30,20 @@ def load_vectorstore(file_path):
     chunks = text_splitter.split_documents(documents)
     return FAISS.from_documents(chunks, OpenAIEmbeddings())
 
-def record_audio(RECORD_SECONDS=5, RATE=44100, CHUNK=1024, CHANNELS=1, FORMAT=pyaudio.paInt16):
-    audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-    frames = []
-    
+def record_audio(RECORD_SECONDS=5, RATE=44100, CHANNELS=1):
     status_message = st.info("🎙️ Listening... Speak now!")
-    for _ in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
-        data = stream.read(CHUNK)
-        frames.append(data)
-    
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-    status_message.empty()
-    
+
     temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    with wave.open(temp_audio.name, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(audio.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
-    
-    return temp_audio.name
+    temp_audio_path = temp_audio.name
+
+    # Recording using soundfile
+    audio_data = np.zeros((RATE * RECORD_SECONDS,), dtype=np.float32)
+    with sf.SoundFile(temp_audio_path, mode='w', samplerate=RATE, channels=CHANNELS, format='WAV') as file:
+        with sf.InputStream(samplerate=RATE, channels=CHANNELS, callback=lambda indata, frames, time, status: file.write(indata)):
+            time.sleep(RECORD_SECONDS)
+
+    status_message.empty()
+    return temp_audio_path
 
 def transcribe_audio(audio_path):
     status_message = st.info("⏳ Transcribing your voice...")
@@ -89,14 +84,15 @@ def generate_response(query):
     
     return response
 
-def text_to_speech(text):
-    response = client.audio.speech.create(model="tts-1", voice="nova", input=text[:4096])
-    
+async def text_to_speech(text):
     audio_bytes = BytesIO()
-    for chunk in response.iter_bytes(1024):
-        audio_bytes.write(chunk)
-    audio_bytes.seek(0)
+    communicate = Communicate(text[:4096], "en-US-JennyNeural")
     
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_bytes.write(chunk["data"])
+    
+    audio_bytes.seek(0)
     return audio_bytes.getvalue()
 
 def main():
@@ -141,7 +137,7 @@ def main():
             st.write(f"🗣️ {transcript}")
         
         response = generate_response(transcript)
-        response_audio = text_to_speech(response)
+        response_audio = asyncio.run(text_to_speech(response))
         
         with st.chat_message("assistant"):
             st.write(response)
