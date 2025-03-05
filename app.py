@@ -1,7 +1,3 @@
-import os
-
-os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
-
 import streamlit as st
 import wave
 import tempfile
@@ -18,9 +14,11 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 import os
 import time
+import streamlit.components.v1 as components
+import base64
 
 # Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = None  # Will be initialized with user's API key
 
 st.set_page_config(page_title="HR Voice Assistant", page_icon="🎤", layout="wide")
 
@@ -33,55 +31,48 @@ def load_vectorstore(file_path):
     chunks = text_splitter.split_documents(documents)
     return FAISS.from_documents(chunks, OpenAIEmbeddings())
 
-def simulated_record_audio():
-    """
-    Simulates audio recording in environments without audio input hardware.
-    Instead of actual recording, it provides a text input field.
-    """
-    status_message = st.info("💬 Type your question below")
-    
-    # Create a temporary file path for compatibility with the rest of the code
+def save_audio_file(uploaded_file):
+    """Save uploaded audio file to a temporary WAV file"""
     temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     temp_audio_path = temp_audio.name
     
-    # Instead of recording, use a text input
-    user_text = st.text_input("Type your question:", key="simulated_voice_input")
+    # Write audio data to the temporary file
+    with open(temp_audio_path, 'wb') as f:
+        f.write(uploaded_file.getvalue())
     
-    # Create a submit button to proceed
-    if st.button("Submit", key="submit_voice_simulation"):
-        # Create an empty WAV file (it won't be used for transcription)
-        with wave.open(temp_audio_path, 'wb') as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            wf.writeframes(b'')
-        
-        # Store the text input in session state to use it instead of transcription
-        st.session_state.simulated_transcript = user_text
-        status_message.empty()
-        return temp_audio_path
-    
-    # If the button wasn't clicked, return None to indicate we're still waiting
-    return None
+    return temp_audio_path
 
 def transcribe_audio(audio_path):
-    """Transcribe audio or use simulated text input"""
-    # If we have a simulated transcript, use it instead of actual transcription
-    if hasattr(st.session_state, 'simulated_transcript'):
-        transcript = st.session_state.simulated_transcript
-        # Clear it for the next round
-        del st.session_state.simulated_transcript
-        return transcript
+    """Transcribe audio using OpenAI's Whisper model"""
+    global client
     
-    # Otherwise proceed with normal transcription (won't be used in simulation mode)
+    if client is None:
+        st.error("Please enter your OpenAI API key in the sidebar.")
+        return None
+    
     status_message = st.info("⏳ Transcribing your voice...")
-    with open(audio_path, "rb") as audio_file:
-        transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file, response_format="text")
-    status_message.empty()
-    return transcript
+    
+    try:
+        with open(audio_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file, 
+                response_format="text"
+            )
+        status_message.empty()
+        return transcript
+    except Exception as e:
+        status_message.empty()
+        st.error(f"Error transcribing audio: {str(e)}")
+        return None
 
 def generate_response(query):
     """Generate a response to the user's query based on the HR policy document"""
+    global client
+    
+    if client is None:
+        return "Please enter your OpenAI API key in the sidebar."
+    
     if "vectorstore" not in st.session_state:
         return "Please upload an HR policy document first."
     
@@ -125,9 +116,68 @@ async def text_to_speech(text):
     audio_bytes.seek(0)
     return audio_bytes.getvalue()
 
+def process_query_and_generate_response(query):
+    # Generate text response
+    response = generate_response(query)
+    
+    # Generate speech asynchronously
+    try:
+        response_audio = asyncio.run(text_to_speech(response))
+    except Exception as e:
+        st.warning(f"Could not generate audio response: {e}")
+        response_audio = None
+    
+    # Update chat history
+    st.session_state.messages.append({"role": "user", "content": query})
+    message_data = {"role": "assistant", "content": response}
+    if response_audio:
+        message_data["audio"] = response_audio
+    st.session_state.messages.append(message_data)
+    
+    # Set state to show "Ask another question" button
+    st.session_state.waiting_for_response = False
+    st.session_state.show_another_question_button = True
+    st.session_state.new_question = False
+    
+    # Force rerun to update UI
+    st.rerun()
+
 def main():
     """Main application function"""
+    global client
+    
+    # Initialize session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything about HR policies!"}]
+    
+    if "waiting_for_response" not in st.session_state:
+        st.session_state.waiting_for_response = False
+        
+    if "new_question" not in st.session_state:
+        st.session_state.new_question = True
+        
+    if "show_another_question_button" not in st.session_state:
+        st.session_state.show_another_question_button = False
+        
     with st.sidebar:
+        st.header("Configuration")
+        
+        # API Key input
+        api_key = st.text_input(
+            "Enter your OpenAI API Key:",
+            type="password",
+            help="Your API key is required for voice transcription and generating responses.",
+            key="api_key"
+        )
+        os.environ["OPENAI_API_KEY"] = api_key
+        
+        # Initialize OpenAI client when API key is provided
+        if api_key:
+            client = OpenAI(api_key=api_key)
+            st.success("API key set! ✅")
+        else:
+            st.warning("Please enter your OpenAI API key to use this application.")
+        
         st.header("HR Policy Document")
         uploaded_file = st.file_uploader("Upload your HR policy document (TXT)", type=["txt"])
         
@@ -145,77 +195,61 @@ def main():
     st.title("HR Voice Assistant 🎤")
     st.markdown("""
     This assistant helps answer questions about HR policies based on uploaded documents.
-    Upload an HR policy document in the sidebar, then ask your questions below.
+    Upload an HR policy document in the sidebar, then ask your questions using your voice or text.
     """)
-    
-    # Display Streamlit version information and autoplay note
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything about HR policies!"}]
     
     # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             if msg["role"] == "assistant" and "audio" in msg:
-                # Try to use autoplay (will work on Streamlit 1.10.0+)
-                try:
-                    st.audio(msg["audio"], format="audio/mp3", autoplay=True)
-                except:
-                    st.audio(msg["audio"], format="audio/mp3")
+                st.audio(msg["audio"], format="audio/mp3", autoplay=True)
     
-    if "waiting_for_input" not in st.session_state:
-        st.session_state.waiting_for_input = True
-    
-    if st.session_state.waiting_for_input:
-        if st.button("💬 Ask a Question"):
-            st.session_state.waiting_for_input = False
+    # Show "Ask another question" button after response or show input widgets
+    if st.session_state.show_another_question_button:
+        if st.button("Ask Another Question", type="primary", use_container_width=True):
+            st.session_state.show_another_question_button = False
+            st.session_state.new_question = True
             st.rerun()
-    else:
-        # Get input from simulated audio recording
-        audio_path = simulated_record_audio()
+    elif st.session_state.new_question and not st.session_state.waiting_for_response:
+        # Main UI for asking questions
+        st.subheader("Ask Your Question")
         
-        # Only proceed if we got a valid input
-        if audio_path is not None:
-            transcript = transcribe_audio(audio_path)
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
+        # Create tabs for voice and text input
+        voice_tab, text_tab = st.tabs(["Voice Input", "Text Input"])
+        
+        # Show voice input only if API key is set
+        with voice_tab:
+            if client is None:
+                st.warning("Please enter your OpenAI API key in the sidebar to use voice input.")
+            else:
+                st.write("Click the microphone button and speak your question:")
+                audio_bytes = st.audio_input(label="Record your question")
+                
+                if audio_bytes:
+                    st.session_state.waiting_for_response = True
+                    
+                    # Save the audio bytes to a temporary file
+                    audio_path = save_audio_file(audio_bytes)
+                    
+                    # Transcribe the audio
+                    transcript = transcribe_audio(audio_path)
+                    
+                    if transcript:
+                        # Process the query and generate response
+                        process_query_and_generate_response(transcript)
+        
+        with text_tab:
+            user_text = st.text_input("Type your question:", key="text_input")
             
-            # Don't process empty input
-            if not transcript or transcript.strip() == "":
-                st.warning("Please enter a question.")
-                st.session_state.waiting_for_input = True
-                st.rerun()
-            
-            with st.chat_message("user"):
-                st.write(f"🗣️ {transcript}")
-            
-            response = generate_response(transcript)
-            
-            # Generate speech asynchronously
-            try:
-                response_audio = asyncio.run(text_to_speech(response))
-            except Exception as e:
-                st.warning(f"Could not generate audio response: {e}")
-                response_audio = None
-            
-            with st.chat_message("assistant"):
-                st.write(response)
-                if response_audio:
-                    # Try to use autoplay (will work on Streamlit 1.10.0+)
-                    try:
-                        st.audio(response_audio, format="audio/mp3", autoplay=True)
-                    except:
-                        st.audio(response_audio, format="audio/mp3")
-            
-            st.session_state.messages.append({"role": "user", "content": transcript})
-            message_data = {"role": "assistant", "content": response}
-            if response_audio:
-                message_data["audio"] = response_audio
-            st.session_state.messages.append(message_data)
-            
-            st.session_state.waiting_for_input = True
-            st.rerun()
+            if st.button("Submit Question", key="submit_text_question"):
+                if user_text and user_text.strip():
+                    st.session_state.waiting_for_response = True
+                    
+                    # Process the query and generate response
+                    process_query_and_generate_response(user_text)
+                else:
+                    st.error("Please enter a question before submitting.")
 
 if __name__ == "__main__":
     main()
