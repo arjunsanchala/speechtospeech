@@ -1,8 +1,11 @@
+import os
+
+os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
+
 import streamlit as st
 import wave
 import tempfile
 import numpy as np
-import soundfile as sf
 from io import BytesIO
 import asyncio
 from edge_tts import Communicate
@@ -16,35 +19,61 @@ from langchain.chains import RetrievalQA
 import os
 import time
 
-os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
+# Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.set_page_config(page_title="HR Voice Assistant", page_icon="🎤", layout="wide")
 
 @st.cache_resource
 def load_vectorstore(file_path):
+    """Load and process a document into a vector store"""
     loader = TextLoader(file_path)
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
     return FAISS.from_documents(chunks, OpenAIEmbeddings())
 
-def record_audio(RECORD_SECONDS=5, RATE=44100, CHANNELS=1):
-    status_message = st.info("🎙️ Listening... Speak now!")
-
+def simulated_record_audio():
+    """
+    Simulates audio recording in environments without audio input hardware.
+    Instead of actual recording, it provides a text input field.
+    """
+    status_message = st.info("💬 Type your question below")
+    
+    # Create a temporary file path for compatibility with the rest of the code
     temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     temp_audio_path = temp_audio.name
-
-    # Recording using soundfile
-    audio_data = np.zeros((RATE * RECORD_SECONDS,), dtype=np.float32)
-    with sf.SoundFile(temp_audio_path, mode='w', samplerate=RATE, channels=CHANNELS, format='WAV') as file:
-        with sf.InputStream(samplerate=RATE, channels=CHANNELS, callback=lambda indata, frames, time, status: file.write(indata)):
-            time.sleep(RECORD_SECONDS)
-
-    status_message.empty()
-    return temp_audio_path
+    
+    # Instead of recording, use a text input
+    user_text = st.text_input("Type your question:", key="simulated_voice_input")
+    
+    # Create a submit button to proceed
+    if st.button("Submit", key="submit_voice_simulation"):
+        # Create an empty WAV file (it won't be used for transcription)
+        with wave.open(temp_audio_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b'')
+        
+        # Store the text input in session state to use it instead of transcription
+        st.session_state.simulated_transcript = user_text
+        status_message.empty()
+        return temp_audio_path
+    
+    # If the button wasn't clicked, return None to indicate we're still waiting
+    return None
 
 def transcribe_audio(audio_path):
+    """Transcribe audio or use simulated text input"""
+    # If we have a simulated transcript, use it instead of actual transcription
+    if hasattr(st.session_state, 'simulated_transcript'):
+        transcript = st.session_state.simulated_transcript
+        # Clear it for the next round
+        del st.session_state.simulated_transcript
+        return transcript
+    
+    # Otherwise proceed with normal transcription (won't be used in simulation mode)
     status_message = st.info("⏳ Transcribing your voice...")
     with open(audio_path, "rb") as audio_file:
         transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file, response_format="text")
@@ -52,6 +81,7 @@ def transcribe_audio(audio_path):
     return transcript
 
 def generate_response(query):
+    """Generate a response to the user's query based on the HR policy document"""
     if "vectorstore" not in st.session_state:
         return "Please upload an HR policy document first."
     
@@ -84,6 +114,7 @@ def generate_response(query):
     return response
 
 async def text_to_speech(text):
+    """Convert text to speech using edge_tts"""
     audio_bytes = BytesIO()
     communicate = Communicate(text[:4096], "en-US-JennyNeural")
     
@@ -95,6 +126,7 @@ async def text_to_speech(text):
     return audio_bytes.getvalue()
 
 def main():
+    """Main application function"""
     with st.sidebar:
         st.header("HR Policy Document")
         uploaded_file = st.file_uploader("Upload your HR policy document (TXT)", type=["txt"])
@@ -104,49 +136,91 @@ def main():
                 tmp_file.write(uploaded_file.getvalue())
                 tmp_path = tmp_file.name
             
-            st.session_state.vectorstore = load_vectorstore(tmp_path)
+            with st.spinner("Processing document..."):
+                st.session_state.vectorstore = load_vectorstore(tmp_path)
             st.success("Document processed successfully!")
         elif "vectorstore" in st.session_state:
             st.info("HR policy document is loaded.")
 
     st.title("HR Voice Assistant 🎤")
+    st.markdown("""
+    This assistant helps answer questions about HR policies based on uploaded documents.
+    Upload an HR policy document in the sidebar, then ask your questions below.
+    """)
+    
+    # Display Streamlit version information and autoplay note
+    st.info("""
+    Note: Automatic audio playback requires Streamlit version 1.10.0 or newer.
+    Current installed version: """ + st.__version__ + """
+    If autoplay doesn't work, you'll need to upgrade Streamlit with: `pip install --upgrade streamlit>=1.10.0`
+    """)
     
     if "messages" not in st.session_state:
         st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything about HR policies!"}]
     
+    # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             if msg["role"] == "assistant" and "audio" in msg:
-                st.audio(msg["audio"], format="audio/mp3", autoplay=True)
+                # Try to use autoplay (will work on Streamlit 1.10.0+)
+                try:
+                    st.audio(msg["audio"], format="audio/mp3", autoplay=True)
+                except:
+                    st.audio(msg["audio"], format="audio/mp3")
     
     if "waiting_for_input" not in st.session_state:
         st.session_state.waiting_for_input = True
     
     if st.session_state.waiting_for_input:
-        if st.button("🎤 Start Recording"):
+        if st.button("💬 Ask a Question"):
             st.session_state.waiting_for_input = False
             st.rerun()
     else:
-        audio_path = record_audio()
-        transcript = transcribe_audio(audio_path)
-        os.remove(audio_path)
+        # Get input from simulated audio recording
+        audio_path = simulated_record_audio()
         
-        with st.chat_message("user"):
-            st.write(f"🗣️ {transcript}")
-        
-        response = generate_response(transcript)
-        response_audio = asyncio.run(text_to_speech(response))
-        
-        with st.chat_message("assistant"):
-            st.write(response)
-            st.audio(response_audio, format="audio/mp3", autoplay=True)
-        
-        st.session_state.messages.append({"role": "user", "content": transcript})
-        st.session_state.messages.append({"role": "assistant", "content": response, "audio": response_audio})
-        
-        st.session_state.waiting_for_input = True
-        st.rerun()
+        # Only proceed if we got a valid input
+        if audio_path is not None:
+            transcript = transcribe_audio(audio_path)
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+            
+            # Don't process empty input
+            if not transcript or transcript.strip() == "":
+                st.warning("Please enter a question.")
+                st.session_state.waiting_for_input = True
+                st.rerun()
+            
+            with st.chat_message("user"):
+                st.write(f"🗣️ {transcript}")
+            
+            response = generate_response(transcript)
+            
+            # Generate speech asynchronously
+            try:
+                response_audio = asyncio.run(text_to_speech(response))
+            except Exception as e:
+                st.warning(f"Could not generate audio response: {e}")
+                response_audio = None
+            
+            with st.chat_message("assistant"):
+                st.write(response)
+                if response_audio:
+                    # Try to use autoplay (will work on Streamlit 1.10.0+)
+                    try:
+                        st.audio(response_audio, format="audio/mp3", autoplay=True)
+                    except:
+                        st.audio(response_audio, format="audio/mp3")
+            
+            st.session_state.messages.append({"role": "user", "content": transcript})
+            message_data = {"role": "assistant", "content": response}
+            if response_audio:
+                message_data["audio"] = response_audio
+            st.session_state.messages.append(message_data)
+            
+            st.session_state.waiting_for_input = True
+            st.rerun()
 
 if __name__ == "__main__":
     main()
