@@ -25,7 +25,7 @@ st.set_page_config(page_title="HR Voice Assistant", page_icon="🎤", layout="wi
 @st.cache_resource
 def load_vectorstore(file_path):
     """Load and process a document into a vector store"""
-    loader = TextLoader(file_path)
+    loader = TextLoader(file_path, encoding='utf-8')
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
