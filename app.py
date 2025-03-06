@@ -16,6 +16,7 @@ import os
 import time
 import streamlit.components.v1 as components
 import base64
+import re
 
 # Initialize OpenAI client
 client = None  # Will be initialized with user's API key
