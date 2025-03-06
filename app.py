@@ -104,10 +104,18 @@ def generate_response(query):
     
     return response
 
+def detect_language(text):
+    """Detect if the text is in English"""
+    english_pattern = re.compile(r'[A-Za-z]')  # Checks for English letters
+    return "en" if english_pattern.search(text) else "ar"
+
 async def text_to_speech(text):
-    """Convert text to speech using edge_tts"""
+    lang = detect_language(text)
+    voice = "ar-SA-ZariyahNeural" if lang == "ar" else "en-US-JennyNeural"
+
     audio_bytes = BytesIO()
-    communicate = Communicate(text[:4096], "en-US-JennyNeural")
+    # communicate = Communicate(text[:4096], "en-US-JennyNeural")
+    communicate = Communicate(text[:4096], voice)
     
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
