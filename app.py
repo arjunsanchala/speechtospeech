@@ -6,7 +6,7 @@ from io import BytesIO
 import asyncio
 from edge_tts import Communicate
 from openai import OpenAI
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import TextLoader, PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -18,15 +18,23 @@ import streamlit.components.v1 as components
 import base64
 import re
 
-# Initialize OpenAI client
-client = None  # Will be initialized with user's API key
+# Hardcode OpenAI API Key
+os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-st.set_page_config(page_title="HR Voice Assistant", page_icon="🎤", layout="wide")
+st.set_page_config(page_title="Voice Assistant", page_icon="🎤", layout="wide")
 
 @st.cache_resource
-def load_vectorstore(file_path):
-    """Load and process a document into a vector store"""
-    loader = TextLoader(file_path, encoding='utf-8')
+def load_vectorstore(file_path, file_type):
+    """Load and process a document (TXT or PDF) into a vector store"""
+    if file_type == "txt":
+        loader = TextLoader(file_path)
+    elif file_type == "pdf":
+        loader = PyMuPDFLoader(file_path)
+    else:
+        st.error("Unsupported file format.")
+        return None
+    
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
@@ -45,12 +53,6 @@ def save_audio_file(uploaded_file):
 
 def transcribe_audio(audio_path):
     """Transcribe audio using OpenAI's Whisper model"""
-    global client
-    
-    if client is None:
-        st.error("Please enter your OpenAI API key in the sidebar.")
-        return None
-    
     status_message = st.info("⏳ Transcribing your voice...")
     
     try:
@@ -68,21 +70,16 @@ def transcribe_audio(audio_path):
         return None
 
 def generate_response(query):
-    """Generate a response to the user's query based on the HR policy document"""
-    global client
-    
-    if client is None:
-        return "Please enter your OpenAI API key in the sidebar."
-    
+    """Generate a response to the user's query based on the document"""
     if "vectorstore" not in st.session_state:
-        return "Please upload an HR policy document first."
+        return "Please upload an a document first."
     
-    template = """Answer strictly based on the provided HR policy document:
+    template = """Answer strictly based on the provided document:
     {context}
     
     Question: {question}
     
-    If the answer isn't found in the document, respond: "This information isn't available in our policies. Please contact HR directly."
+    If the answer isn't found in the document, respond: "I am sorry but this information isn't available in the document."
     """
     
     prompt = PromptTemplate(template=template, input_variables=["context", "question"])
@@ -115,7 +112,6 @@ async def text_to_speech(text):
     voice = "ar-SA-ZariyahNeural" if lang == "ar" else "en-US-JennyNeural"
 
     audio_bytes = BytesIO()
-    # communicate = Communicate(text[:4096], "en-US-JennyNeural")
     communicate = Communicate(text[:4096], voice)
     
     async for chunk in communicate.stream():
@@ -126,38 +122,30 @@ async def text_to_speech(text):
     return audio_bytes.getvalue()
 
 def process_query_and_generate_response(query):
-    # Generate text response
     response = generate_response(query)
     
-    # Generate speech asynchronously
     try:
         response_audio = asyncio.run(text_to_speech(response))
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
         response_audio = None
     
-    # Update chat history
     st.session_state.messages.append({"role": "user", "content": query})
     message_data = {"role": "assistant", "content": response}
     if response_audio:
         message_data["audio"] = response_audio
     st.session_state.messages.append(message_data)
     
-    # Set state to show "Ask another question" button
     st.session_state.waiting_for_response = False
     st.session_state.show_another_question_button = True
     st.session_state.new_question = False
     
-    # Force rerun to update UI
     st.rerun()
 
 def main():
     """Main application function"""
-    global client
-    
-    # Initialize session state
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything about HR policies!"}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hello! Upload a document and ask me anything from the document."}]
     
     if "waiting_for_response" not in st.session_state:
         st.session_state.waiting_for_response = False
@@ -169,84 +157,57 @@ def main():
         st.session_state.show_another_question_button = False
         
     with st.sidebar:
-        st.header("Configuration")
-        
-        # API Key input
-        api_key = st.text_input(
-            "Enter your OpenAI API Key:",
-            type="password",
-            help="Your API key is required for voice transcription and generating responses.",
-            key="api_key"
-        )
-        os.environ["OPENAI_API_KEY"] = api_key
-        
-        # Initialize OpenAI client when API key is provided
-        if api_key:
-            client = OpenAI(api_key=api_key)
-            st.success("API key set! ✅")
-        else:
-            st.warning("Please enter your OpenAI API key to use this application.")
-        
-        st.header("HR Policy Document")
-        uploaded_file = st.file_uploader("Upload your HR policy document (TXT)", type=["txt"])
+        st.header("Document Upload Section")
+        uploaded_file = st.file_uploader("Upload your document (TXT or PDF)", type=["txt", "pdf"])
         
         if uploaded_file is not None and "vectorstore" not in st.session_state:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp_file:
+            file_type = uploaded_file.name.split(".")[-1]
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_type}") as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
                 tmp_path = tmp_file.name
             
             with st.spinner("Processing document..."):
-                st.session_state.vectorstore = load_vectorstore(tmp_path)
+                st.session_state.vectorstore = load_vectorstore(tmp_path, file_type)
             st.success("Document processed successfully!")
         elif "vectorstore" in st.session_state:
-            st.info("HR policy document is loaded.")
+            st.info("The document is loaded.")
 
-    st.title("HR Voice Assistant 🎤")
+    st.title("Voice Assistant 🎤")
     st.markdown("""
-    This assistant helps answer questions about HR policies based on uploaded documents.
-    Upload an HR policy document in the sidebar, then ask your questions using your voice or text.
+    This assistant helps answer questions from the uploaded documents.
+    Upload a document in the sidebar, then ask your questions using your voice or text.
     """)
     
-    # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             if msg["role"] == "assistant" and "audio" in msg:
                 st.audio(msg["audio"], format="audio/mp3", autoplay=True)
     
-    # Show "Ask another question" button after response or show input widgets
     if st.session_state.show_another_question_button:
         if st.button("Ask Another Question", type="primary", use_container_width=True):
             st.session_state.show_another_question_button = False
             st.session_state.new_question = True
             st.rerun()
     elif st.session_state.new_question and not st.session_state.waiting_for_response:
-        # Main UI for asking questions
         st.subheader("Ask Your Question")
         
-        # Create tabs for voice and text input
         voice_tab, text_tab = st.tabs(["Voice Input", "Text Input"])
         
-        # Show voice input only if API key is set
         with voice_tab:
-            if client is None:
-                st.warning("Please enter your OpenAI API key in the sidebar to use voice input.")
-            else:
-                st.write("Click the microphone button and speak your question:")
-                audio_bytes = st.audio_input(label="Record your question")
+            st.write("Click the microphone button and speak your question:")
+            audio_bytes = st.audio_input(label="Record your question")
+            
+            if audio_bytes:
+                st.session_state.waiting_for_response = True
                 
-                if audio_bytes:
-                    st.session_state.waiting_for_response = True
-                    
-                    # Save the audio bytes to a temporary file
-                    audio_path = save_audio_file(audio_bytes)
-                    
-                    # Transcribe the audio
-                    transcript = transcribe_audio(audio_path)
-                    
-                    if transcript:
-                        # Process the query and generate response
-                        process_query_and_generate_response(transcript)
+                audio_path = save_audio_file(audio_bytes)
+                
+                transcript = transcribe_audio(audio_path)
+                
+                if transcript:
+                    process_query_and_generate_response(transcript)
         
         with text_tab:
             user_text = st.text_input("Type your question:", key="text_input")
@@ -254,8 +215,6 @@ def main():
             if st.button("Submit Question", key="submit_text_question"):
                 if user_text and user_text.strip():
                     st.session_state.waiting_for_response = True
-                    
-                    # Process the query and generate response
                     process_query_and_generate_response(user_text)
                 else:
                     st.error("Please enter a question before submitting.")

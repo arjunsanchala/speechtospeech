@@ -9,3 +9,4 @@ pydub
 wave
 edge-tts
 streamlit==1.43.0
+PyMuPDF
