@@ -19,7 +19,7 @@ import base64
 import re
 
 # Hardcode OpenAI API Key
-os.environ["OPENAI_API_KEY"] = "sk-ds-team-general-uRHEpM4v8JyZPznqvmSMT3BlbkFJPIMx3gi9v6BQOn58RbSN"
+os.environ["OPENAI_API_KEY"] = ""
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 st.set_page_config(page_title="Voice Assistant", page_icon="🎤", layout="wide")
